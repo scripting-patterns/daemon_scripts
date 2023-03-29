@@ -1,0 +1,82 @@
+#!/usr/bin/perl
+use IO::Handle;
+use IO::Socket::INET;
+
+our %LOGS;
+our $HOST = `hostname`;
+$HOST =~ s/\n//;
+
+our $addr = "localhost";
+our $port = 13902;
+
+open INI, "logcrawler.ini" or die "unable to open the INI file, logcrawler.ini\n";
+
+###################################################
+# Read the INI file.
+###################################################
+while (<INI>) {
+	unless (/#/) {
+		if (/(\S*)\s*(.*)/) {
+			my $log = $1;
+			my $match = $2;;
+			if ( ! defined $LOGS {$log} && $log ne "") {
+				$LOGS {$log} = $match;
+			}
+		}
+	}
+}
+
+foreach my $log (keys %LOGS) {
+	our $fn = $log;
+	our $match = $LOGS{$log};
+##################################################
+# Spawn a child foreach log
+##################################################
+	my $pid = fork ();
+	if ($pid == 0) {
+		$0 = "logcrawler $fn";
+		open LOG, "<$fn" or die "Unable to open log $fn\n";
+		while (1) {
+			our $alert = 0;
+##################################################
+# Read for new log entries
+##################################################
+			while (<LOG>) {
+				if ($match ne "") {
+					if (/$match/) {
+						$alert = 1;
+					}
+				} else {
+					$alert = 1;
+				}
+				$out .= $_;
+			}
+##################################################
+# Send out the alert
+##################################################
+			if ($alert == 1) {
+				if (my $sock = IO::Socket::INET->new(PeerAddr => $addr, PeerPort => $port, Proto => "tcp")) {
+					$sock->send ("logs $HOST $fn\n", 1024);
+					$sock->send ($out, 1024);
+					$sock->close();
+				}
+				$alert = 0; 
+			}
+
+			$out = "";
+##################################################
+# Check for log rotation
+##################################################
+			my @fs_info_cur = stat LOG;
+			my @fs_info_ondisk = stat $fn;
+			if ($fs_info_cur[1] == $fs_info_ondisk[1]) {
+				sleep 1; # Wait for 30 seconds before re-read the file.
+			} else {
+				close LOG; # Close the current file.
+				open LOG, "<$fn" or die "Unable to open log $fn\n"; # And re-open the new log file.
+			}
+		}
+	} else {
+		print "Log crawler for $fn launched with [PID: $pid], seraching for $match\n";
+	}
+}
